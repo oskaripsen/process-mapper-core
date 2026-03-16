@@ -1023,18 +1023,18 @@ Return ONLY the comment text, nothing else. Keep it under 50 words."""
         
         doc.add_paragraph()
         
-        table = doc.add_table(rows=5, cols=2)
-        table.style = 'Table Grid'
-        
-        owner_text = self._get_owner_display(assignments)
-        
+        version_num = process.get('version', 1)
         metadata = [
             ("SOP ID", str(process.get('id', 'N/A'))),
             ("Process Level", f"L{process.get('level', 3)}"),
             ("Process Hierarchy", f"{hierarchy.get('l0_name', '')} → {hierarchy.get('l1_name', '')} → {hierarchy.get('l2_name', '')} → {hierarchy.get('l3_name', '')}"),
-            ("Owner", owner_text),
+            ("Owner", self._get_owner_display(assignments)),
             ("Last Updated", self._format_date(process.get('updated_at'))),
+            ("Version", f"v{version_num}" if version_num else "N/A"),
         ]
+
+        table = doc.add_table(rows=len(metadata), cols=2)
+        table.style = 'Table Grid'
         
         for i, (label, value) in enumerate(metadata):
             row = table.rows[i]

@@ -338,6 +338,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -1166,7 +1167,25 @@ async def export_sop(
         flow["flow_data"] = flow_data
 
     hierarchy = await get_process_hierarchy(conn, process_id)
+
+    # Look up the process creator as the owner
+    async with conn.execute(
+        "SELECT email, username FROM users WHERE id = ?",
+        (process.get("user_id"),),
+    ) as cursor:
+        user_row = await cursor.fetchone()
     assignments: List[Dict[str, Any]] = []
+    if user_row:
+        assignments.append({
+            "role": "owner",
+            "full_name": user_row["username"],
+            "user_email": user_row["email"],
+        })
+
+    # Inject updated_at and version into the process dict for the title page
+    if flow:
+        process["updated_at"] = flow.get("updated_at") or flow.get("created_at")
+        process["version"] = flow.get("version", 1)
 
     ai_suggestions = None
     if include_ai:
@@ -1208,7 +1227,8 @@ async def export_sop(
 
     doc_bytes = doc_buffer.getvalue()
     safe_name = _sanitize_filename(process.get("name", "Process"))
-    filename = f"SOP_{safe_name}.docx"
+    date_str = datetime.utcnow().strftime("%y%m%d")
+    filename = f"{safe_name} - {date_str} vDraft.docx"
 
     return Response(
         content=doc_bytes,
