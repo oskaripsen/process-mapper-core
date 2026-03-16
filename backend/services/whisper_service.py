@@ -2,6 +2,7 @@ import io
 import logging
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, List
 
 from pydub import AudioSegment
@@ -10,14 +11,23 @@ MAX_AUDIO_SIZE_BYTES = 24 * 1024 * 1024
 CHUNK_DURATION_MS = 5 * 60 * 1000
 logger = logging.getLogger(__name__)
 
+MODELS_DIR = Path(__file__).resolve().parent.parent.parent / "models"
+
 
 class WhisperService:
     def __init__(self):
-        model_size = os.getenv("FASTER_WHISPER_MODEL", "base")
+        model_size = os.getenv("FASTER_WHISPER_MODEL", "small")
         self.model = None
         try:
-            from faster_whisper import WhisperModel  # lazy import to avoid hard crash on startup
-            self.model = WhisperModel(model_size, compute_type="int8")
+            from faster_whisper import WhisperModel
+
+            local_model_path = MODELS_DIR / f"faster-whisper-{model_size}"
+            if local_model_path.is_dir():
+                logger.info("Loading faster-whisper from local path: %s", local_model_path)
+                self.model = WhisperModel(str(local_model_path), compute_type="int8")
+            else:
+                logger.info("Local model not found at %s, downloading '%s' from HuggingFace", local_model_path, model_size)
+                self.model = WhisperModel(model_size, compute_type="int8")
         except Exception as exc:
             logger.warning("faster-whisper initialization failed: %s", exc)
             self.model = None

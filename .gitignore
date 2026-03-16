@@ -1,0 +1,72 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+*.egg-info/
+*.egg
+
+# ── Node.js ──
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── Build outputs ──
+dist/
+build/
+.vite/
+
+# ── Environment variables ──
+.env
+.env.local
+.env.*.local
+
+# ── Database ──
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# ── IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# ── Testing ──
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Faster-Whisper model files (too large for git) ──
+models/
+
+# ── Local storage (screenshots, exports) ──
+backend/local_storage/
+
+# ── mypy / type checkers ──
+.mypy_cache/
+.dmypy.json
+.pyre/

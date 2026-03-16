@@ -1037,7 +1037,200 @@ async def rollback_patch(payload: Dict[str, Any], user_id: str = Depends(get_cur
 
 @app.post("/api/export/excel")
 async def export_excel(payload: Dict[str, Any], user_id: str = Depends(get_current_user_id)):
-    return {"message": "Excel export endpoint is available in core mode."}
+    import io
+    from fastapi.responses import Response
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    selected_l0_ids: List[str] = payload.get("selected_l0_ids", [])
+    taxonomy_attrs: List[str] = payload.get("taxonomy_attributes", [])
+    flow_attrs: List[str] = payload.get("flow_attributes", [])
+    include_flow_nodes: bool = payload.get("include_flow_nodes", True)
+    node_attrs: List[str] = payload.get("node_attributes", [])
+
+    if not selected_l0_ids:
+        raise HTTPException(status_code=400, detail="No L0 processes selected")
+
+    conn = db.get_connection()
+
+    # Collect all taxonomy rows for the user, then filter to selected L0 subtrees
+    async with conn.execute(
+        "SELECT id, parent_id, name, description, level, code, sort_order, created_at "
+        "FROM process_taxonomy WHERE user_id = ? ORDER BY level, sort_order",
+        (user_id,),
+    ) as cursor:
+        all_rows = [dict(r) for r in await cursor.fetchall()]
+
+    by_id = {r["id"]: r for r in all_rows}
+    children_of: Dict[Optional[str], List[dict]] = {}
+    for r in all_rows:
+        children_of.setdefault(r["parent_id"], []).append(r)
+
+    # Walk subtrees of selected L0s
+    def collect_subtree(root_id: str) -> List[dict]:
+        items = []
+        node = by_id.get(root_id)
+        if not node:
+            return items
+        items.append(node)
+        for child in children_of.get(root_id, []):
+            items.extend(collect_subtree(child["id"]))
+        return items
+
+    included: List[dict] = []
+    for l0_id in selected_l0_ids:
+        included.extend(collect_subtree(l0_id))
+
+    # Build hierarchy lookup (walk parent chain for each item)
+    def get_hierarchy(item_id: str) -> Dict[str, str]:
+        h = {}
+        cur = item_id
+        while cur:
+            node = by_id.get(cur)
+            if not node:
+                break
+            h[node["level"]] = node["name"]
+            cur = node["parent_id"]
+        return {"l0": h.get(0, ""), "l1": h.get(1, ""), "l2": h.get(2, "")}
+
+    # Fetch user info for owner display
+    async with conn.execute("SELECT id, email, username FROM users WHERE id = ?", (user_id,)) as cursor:
+        user_row = await cursor.fetchone()
+    owner_display = (dict(user_row)["username"] if user_row else "N/A")
+
+    # Fetch all flows for included processes
+    process_ids = [r["id"] for r in included]
+    flows_by_process: Dict[str, dict] = {}
+    if process_ids:
+        placeholders = ",".join("?" for _ in process_ids)
+        async with conn.execute(
+            f"SELECT id, process_id, user_id, title, description, flow_data, version, "
+            f"created_at, updated_at FROM process_flows WHERE process_id IN ({placeholders})",
+            process_ids,
+        ) as cursor:
+            for row in await cursor.fetchall():
+                flows_by_process[row["process_id"]] = dict(row)
+
+    # --- Build workbook ---
+    wb = Workbook()
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    # ---- Sheet 1: Taxonomy ----
+    ws_tax = wb.active
+    ws_tax.title = "Taxonomy"
+
+    tax_col_map = [
+        ("id", "ID"),
+        ("parent_id", "Parent ID"),
+        ("l0", "L0 Name"),
+        ("l1", "L1 Name"),
+        ("l2", "L2 Name"),
+        ("level", "Level"),
+        ("name", "Process Name"),
+        ("description", "Description"),
+        ("updated_at", "Updated At"),
+        ("role", "Owner(s)"),
+    ]
+    tax_cols = [(key, label) for key, label in tax_col_map if key in taxonomy_attrs]
+
+    for ci, (_, label) in enumerate(tax_cols, 1):
+        cell = ws_tax.cell(row=1, column=ci, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+
+    for ri, item in enumerate(included, 2):
+        hierarchy = get_hierarchy(item["id"])
+        flow = flows_by_process.get(item["id"])
+        for ci, (key, _) in enumerate(tax_cols, 1):
+            if key == "l0":
+                val = hierarchy.get("l0", "")
+            elif key == "l1":
+                val = hierarchy.get("l1", "")
+            elif key == "l2":
+                val = hierarchy.get("l2", "")
+            elif key == "role":
+                val = owner_display
+            elif key == "updated_at":
+                val = (flow["updated_at"] if flow else item.get("created_at")) or ""
+            else:
+                val = item.get(key, "")
+            cell = ws_tax.cell(row=ri, column=ci, value=val if val is not None else "")
+            cell.border = thin_border
+
+    for ci in range(1, len(tax_cols) + 1):
+        ws_tax.column_dimensions[ws_tax.cell(row=1, column=ci).column_letter].width = 20
+
+    # ---- Sheet 2: Flow Nodes (if requested) ----
+    if include_flow_nodes:
+        ws_nodes = wb.create_sheet("Flow Nodes")
+
+        node_col_map = [
+            ("process_name", "Process Name"),
+            ("node_type", "Node Type"),
+            ("node_label", "Process Step"),
+            ("node_owner", "Owner"),
+            ("node_system", "Tool/System"),
+            ("node_automation", "Manual/Automated"),
+        ]
+        # Always include process_name for context, plus requested attrs
+        active_node_keys = set(node_attrs) | {"process_name"}
+        node_cols = [(key, label) for key, label in node_col_map if key in active_node_keys]
+
+        for ci, (_, label) in enumerate(node_cols, 1):
+            cell = ws_nodes.cell(row=1, column=ci, value=label)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="center")
+
+        row_idx = 2
+        for item in included:
+            flow = flows_by_process.get(item["id"])
+            if not flow:
+                continue
+            raw = flow.get("flow_data") or "{}"
+            try:
+                fd = json.loads(raw) if isinstance(raw, str) else raw
+            except json.JSONDecodeError:
+                continue
+            nodes_list = fd.get("nodes", [])
+            if not nodes_list:
+                continue
+
+            for node in nodes_list:
+                nd = node.get("data", node)
+                vals = {
+                    "process_name": item["name"],
+                    "node_type": node.get("type") or nd.get("type", "process"),
+                    "node_label": nd.get("label", ""),
+                    "node_owner": nd.get("owner", ""),
+                    "node_system": nd.get("system", ""),
+                    "node_automation": nd.get("manualOrAutomated", ""),
+                }
+                for ci, (key, _) in enumerate(node_cols, 1):
+                    cell = ws_nodes.cell(row=row_idx, column=ci, value=vals.get(key, ""))
+                    cell.border = thin_border
+                row_idx += 1
+
+        for ci in range(1, len(node_cols) + 1):
+            ws_nodes.column_dimensions[ws_nodes.cell(row=1, column=ci).column_letter].width = 22
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="process_export.xlsx"'},
+    )
 
 
 @app.get("/api/dashboard/{user_id}")

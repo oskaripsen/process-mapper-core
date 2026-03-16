@@ -6,19 +6,58 @@ supports SOP generation workflows, and provides a React-based visual editor.
 
 ## Quick Start
 
-### Backend
+### 1. Set up the Whisper model (local transcription)
+
+The app uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for
+local audio transcription. Model files are too large for Git, so you need to
+add them manually.
+
+Create the following folder structure in the project root:
+
+```
+models/
+  faster-whisper-small/
+    config.json
+    model.bin
+    tokenizer.json
+    vocabulary.txt
+```
+
+**To get these files**, download the `small` model from HuggingFace:
+
+```bash
+pip install faster-whisper
+python -c "from faster_whisper import WhisperModel; WhisperModel('small', compute_type='int8')"
+```
+
+This caches the model at `~/.cache/huggingface/hub/models--Systran--faster-whisper-small/`.
+Copy the four files from the snapshot folder into `models/faster-whisper-small/`:
+
+```bash
+mkdir -p models/faster-whisper-small
+cp ~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/*/config.json models/faster-whisper-small/
+cp ~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/*/model.bin models/faster-whisper-small/
+cp ~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/*/tokenizer.json models/faster-whisper-small/
+cp ~/.cache/huggingface/hub/models--Systran--faster-whisper-small/snapshots/*/vocabulary.txt models/faster-whisper-small/
+```
+
+> If the `models/` folder is missing, the app falls back to downloading the
+> model from HuggingFace on first run (requires internet).
+
+### 2. Backend
 
 ```bash
 cd backend
 python3.11 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+cp ../.env.example .env   # then edit .env with your keys
 python app.py
 ```
 
 Backend runs on `http://localhost:8000`.
 
-### Frontend
+### 3. Frontend
 
 ```bash
 cd frontend
@@ -32,15 +71,16 @@ Frontend runs on `http://localhost:5173`.
 
 - Backend: FastAPI, Python
 - Frontend: React, Vite, React Flow
-- AI: LLM-assisted process extraction and transcription pipeline
+- Transcription: faster-whisper (local, no API calls)
+- AI: LLM-assisted process extraction and SOP generation
 
 ## Project Structure
 
 ```text
 process-mapper-core/
-  backend/
-  frontend/
-  Dockerfile
+  backend/       # FastAPI server
+  frontend/      # React + Vite app
+  models/        # faster-whisper model files (not in git)
 ```
 
 ## Legal & IP
