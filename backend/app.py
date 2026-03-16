@@ -1145,22 +1145,24 @@ async def export_excel(payload: Dict[str, Any], user_id: str = Depends(get_curre
         cell.border = thin_border
         cell.alignment = Alignment(horizontal="center")
 
+    def get_taxonomy_value(item: dict, flow: Optional[dict], hierarchy: Dict[str, str], key: str):
+        if key == "l0":
+            return hierarchy.get("l0", "")
+        if key == "l1":
+            return hierarchy.get("l1", "")
+        if key == "l2":
+            return hierarchy.get("l2", "")
+        if key == "role":
+            return owner_display
+        if key == "updated_at":
+            return (flow["updated_at"] if flow else item.get("created_at")) or ""
+        return item.get(key, "")
+
     for ri, item in enumerate(included, 2):
         hierarchy = get_hierarchy(item["id"])
         flow = flows_by_process.get(item["id"])
         for ci, (key, _) in enumerate(tax_cols, 1):
-            if key == "l0":
-                val = hierarchy.get("l0", "")
-            elif key == "l1":
-                val = hierarchy.get("l1", "")
-            elif key == "l2":
-                val = hierarchy.get("l2", "")
-            elif key == "role":
-                val = owner_display
-            elif key == "updated_at":
-                val = (flow["updated_at"] if flow else item.get("created_at")) or ""
-            else:
-                val = item.get(key, "")
+            val = get_taxonomy_value(item, flow, hierarchy, key)
             cell = ws_tax.cell(row=ri, column=ci, value=val if val is not None else "")
             cell.border = thin_border
 
@@ -1171,19 +1173,31 @@ async def export_excel(payload: Dict[str, Any], user_id: str = Depends(get_curre
     if include_flow_nodes:
         ws_nodes = wb.create_sheet("Flow Nodes")
 
-        node_col_map = [
+        flow_col_map = [
             ("process_name", "Process Name"),
+            ("title", "Flow Title"),
+            ("description", "Flow Description"),
+            ("created_by", "Created By"),
+            ("status", "Status"),
+            ("version", "Flow Version"),
+            ("created_at", "Flow Created At"),
+            ("updated_at", "Flow Updated At"),
+        ]
+        flow_cols = [(key, label) for key, label in flow_col_map if key in flow_attrs]
+
+        node_col_map = [
             ("node_type", "Node Type"),
             ("node_label", "Process Step"),
             ("node_owner", "Owner"),
             ("node_system", "Tool/System"),
             ("node_automation", "Manual/Automated"),
         ]
-        # Always include process_name for context, plus requested attrs
-        active_node_keys = set(node_attrs) | {"process_name"}
+        active_node_keys = set(node_attrs)
         node_cols = [(key, label) for key, label in node_col_map if key in active_node_keys]
+        expanded_cols = tax_cols + flow_cols + node_cols
+        taxonomy_keys = {k for k, _ in tax_cols}
 
-        for ci, (_, label) in enumerate(node_cols, 1):
+        for ci, (_, label) in enumerate(expanded_cols, 1):
             cell = ws_nodes.cell(row=1, column=ci, value=label)
             cell.font = header_font
             cell.fill = header_fill
@@ -1206,20 +1220,36 @@ async def export_excel(payload: Dict[str, Any], user_id: str = Depends(get_curre
 
             for node in nodes_list:
                 nd = node.get("data", node)
-                vals = {
+                hierarchy = get_hierarchy(item["id"])
+                flow_vals = {
                     "process_name": item["name"],
+                    "title": flow.get("title", ""),
+                    "description": flow.get("description", ""),
+                    "created_by": flow.get("user_id", ""),
+                    "status": flow.get("status", ""),
+                    "version": flow.get("version", ""),
+                    "created_at": flow.get("created_at", ""),
+                    "updated_at": flow.get("updated_at", ""),
+                }
+                node_vals = {
                     "node_type": node.get("type") or nd.get("type", "process"),
                     "node_label": nd.get("label", ""),
                     "node_owner": nd.get("owner", ""),
                     "node_system": nd.get("system", ""),
                     "node_automation": nd.get("manualOrAutomated", ""),
                 }
-                for ci, (key, _) in enumerate(node_cols, 1):
-                    cell = ws_nodes.cell(row=row_idx, column=ci, value=vals.get(key, ""))
+                for ci, (key, _) in enumerate(expanded_cols, 1):
+                    if key in taxonomy_keys:
+                        value = get_taxonomy_value(item, flow, hierarchy, key)
+                    elif key in flow_vals:
+                        value = flow_vals.get(key, "")
+                    else:
+                        value = node_vals.get(key, "")
+                    cell = ws_nodes.cell(row=row_idx, column=ci, value=value)
                     cell.border = thin_border
                 row_idx += 1
 
-        for ci in range(1, len(node_cols) + 1):
+        for ci in range(1, len(expanded_cols) + 1):
             ws_nodes.column_dimensions[ws_nodes.cell(row=1, column=ci).column_letter].width = 22
 
     buf = io.BytesIO()
