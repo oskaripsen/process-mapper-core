@@ -1358,13 +1358,13 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
                             <span className="info-icon">?</span>
                             <div className="tooltip-content">
                               <div className="tooltip-item">
-                                <strong>Owner:</strong> Full control - can manage all access rights and process settings
+                                <strong>Owner:</strong> Full control: can assign/remove owners, delegators, and delegatees. Full edit rights.
                               </div>
                               <div className="tooltip-item">
-                                <strong>Delegator:</strong> Can assign delegators and delegatees, review work
+                                <strong>Delegator:</strong> Can assign/remove delegators and delegatees (no owners). Full edit rights.
                               </div>
                               <div className="tooltip-item">
-                                <strong>Delegatee:</strong> Can create and submit process flows
+                                <strong>Delegatee:</strong> Full edit rights, but cannot assign access.
                               </div>
                             </div>
                           </div>

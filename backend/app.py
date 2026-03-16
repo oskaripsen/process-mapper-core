@@ -180,6 +180,12 @@ class TaxonomyReorderRequest(BaseModel):
     items: List[TaxonomyReorderItem]
 
 
+class ProcessAssignmentCreateRequest(BaseModel):
+    process_id: str
+    user_email: EmailStr
+    role: str
+
+
 class FlowCreate(BaseModel):
     process_id: str
     title: str
@@ -201,6 +207,147 @@ class IncrementalFlowRequest(BaseModel):
     validationErrors: Optional[List[str]] = None
     userEdits: Optional[List[Dict[str, Any]]] = None
     extractedIntent: Optional[Dict[str, Any]] = None
+
+
+VALID_ASSIGNMENT_ROLES: Set[str] = {"owner", "delegator", "delegatee"}
+
+
+def _normalize_role(role: str) -> str:
+    normalized = (role or "").strip().lower()
+    if normalized not in VALID_ASSIGNMENT_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be owner, delegator, or delegatee")
+    return normalized
+
+
+async def _get_user_email(conn, user_id: str) -> Optional[str]:
+    async with conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)) as cursor:
+        row = await cursor.fetchone()
+    return row["email"] if row else None
+
+
+async def _get_process_row(conn, process_id: str) -> Optional[Dict[str, Any]]:
+    async with conn.execute(
+        "SELECT id, user_id, parent_id, name FROM process_taxonomy WHERE id = ?",
+        (process_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def _ensure_creator_owner_assignment(conn, process_id: str) -> None:
+    process_row = await _get_process_row(conn, process_id)
+    if not process_row:
+        return
+
+    creator_user_id = process_row["user_id"]
+    creator_email = await _get_user_email(conn, creator_user_id)
+    if not creator_email:
+        return
+
+    async with conn.execute(
+        """
+        SELECT id FROM process_assignments
+        WHERE process_id = ? AND role = 'owner' AND is_active = 1
+          AND (user_id = ? OR lower(user_email) = lower(?))
+        LIMIT 1
+        """,
+        (process_id, creator_user_id, creator_email),
+    ) as cursor:
+        existing = await cursor.fetchone()
+    if existing:
+        return
+
+    assignment_id = str(uuid.uuid4())
+    await conn.execute(
+        """
+        INSERT INTO process_assignments (id, process_id, user_email, user_id, role, assigned_by, is_active)
+        VALUES (?, ?, ?, ?, 'owner', ?, 1)
+        """,
+        (assignment_id, process_id, creator_email.lower(), creator_user_id, creator_user_id),
+    )
+
+
+async def _get_effective_assignments(conn, process_id: str) -> List[Dict[str, Any]]:
+    query = """
+        WITH RECURSIVE lineage(id, parent_id, depth) AS (
+            SELECT id, parent_id, 0
+            FROM process_taxonomy
+            WHERE id = ?
+            UNION ALL
+            SELECT pt.id, pt.parent_id, lineage.depth + 1
+            FROM process_taxonomy pt
+            JOIN lineage ON pt.id = lineage.parent_id
+        )
+        SELECT
+            pa.id,
+            pa.process_id,
+            pa.user_email,
+            pa.user_id,
+            pa.role,
+            pa.assigned_by,
+            pa.assigned_at,
+            pa.is_active,
+            pt.name AS process_name,
+            lineage.depth
+        FROM lineage
+        JOIN process_assignments pa ON pa.process_id = lineage.id AND pa.is_active = 1
+        LEFT JOIN process_taxonomy pt ON pt.id = pa.process_id
+        ORDER BY lineage.depth ASC, pa.assigned_at ASC
+    """
+    async with conn.execute(query, (process_id,)) as cursor:
+        rows = await cursor.fetchall()
+    assignments: List[Dict[str, Any]] = []
+    seen_identities: Set[str] = set()
+    for row in rows:
+        item = dict(row)
+        item.pop("depth", None)
+        identity = (
+            f"id:{item['user_id']}"
+            if item.get("user_id")
+            else f"email:{(item.get('user_email') or '').lower()}"
+        )
+        # Keep closest assignment for each user (direct before inherited),
+        # which prevents duplicated entries when creator is owner at multiple levels.
+        if identity in seen_identities:
+            continue
+        seen_identities.add(identity)
+        assignments.append(item)
+    return assignments
+
+
+async def _get_requester_role_context(conn, process_id: str, user_id: str) -> Dict[str, Any]:
+    process_row = await _get_process_row(conn, process_id)
+    if not process_row:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    await _ensure_creator_owner_assignment(conn, process_id)
+    requester_email = await _get_user_email(conn, user_id)
+    assignments = await _get_effective_assignments(conn, process_id)
+    requester_assignments = [
+        a for a in assignments
+        if a.get("user_id") == user_id
+        or (
+            requester_email
+            and a.get("user_email")
+            and a["user_email"].lower() == requester_email.lower()
+        )
+    ]
+
+    is_creator = process_row["user_id"] == user_id
+    requester_roles = {a.get("role") for a in requester_assignments}
+    is_owner = is_creator or "owner" in requester_roles
+    is_delegator = "delegator" in requester_roles
+    has_access = is_creator or len(requester_assignments) > 0
+    can_manage = is_owner or is_delegator
+
+    return {
+        "process": process_row,
+        "assignments": assignments,
+        "has_access": has_access,
+        "is_owner": is_owner,
+        "is_delegator": is_delegator,
+        "can_manage": can_manage,
+    }
 
 
 async def _next_sibling_sort_order(
@@ -733,23 +880,69 @@ async def create_taxonomy(item: TaxonomyCreate, user_id: str = Depends(get_curre
         "INSERT INTO process_taxonomy (id, user_id, name, description, code, level, parent_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (item_id, user_id, item.name, item.description, item.code, item.level, item.parent_id, sort_order),
     )
+    await _ensure_creator_owner_assignment(conn, item_id)
     await conn.commit()
     payload = item.model_dump()
     payload["sort_order"] = sort_order
+    payload["created_by"] = user_id
     return {"id": item_id, **payload}
 
 
 @app.get("/api/process-taxonomy")
 async def list_taxonomy(user_id: str = Depends(get_current_user_id)):
     conn = db.get_connection()
+    async with conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)) as cursor:
+        user_row = await cursor.fetchone()
+    user_email = user_row["email"] if user_row else None
+
     async with conn.execute(
         """
-        SELECT id, name, description, code, level, parent_id, sort_order
-        FROM process_taxonomy
-        WHERE user_id = ?
-        ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_order, created_at
+        WITH RECURSIVE
+        seed(id) AS (
+            SELECT id
+            FROM process_taxonomy
+            WHERE user_id = ?
+            UNION
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1
+              AND (
+                  user_id = ?
+                  OR (? IS NOT NULL AND lower(user_email) = lower(?))
+              )
+        ),
+        -- Include descendants so assignments on parent processes flow down.
+        down(id) AS (
+            SELECT id FROM seed
+            UNION
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN down d ON pt.parent_id = d.id
+        ),
+        -- Include ancestors to preserve full tree context in the UI.
+        up(id, parent_id) AS (
+            SELECT pt.id, pt.parent_id
+            FROM process_taxonomy pt
+            WHERE pt.id IN (SELECT id FROM down)
+            UNION
+            SELECT pt.id, pt.parent_id
+            FROM process_taxonomy pt
+            JOIN up ON up.parent_id = pt.id
+        )
+        SELECT DISTINCT
+            pt.id,
+            pt.user_id AS created_by,
+            pt.name,
+            pt.description,
+            pt.code,
+            pt.level,
+            pt.parent_id,
+            pt.sort_order
+        FROM process_taxonomy pt
+        WHERE pt.id IN (SELECT id FROM up)
+        ORDER BY CASE WHEN pt.parent_id IS NULL THEN 0 ELSE 1 END, pt.parent_id, pt.sort_order, pt.created_at
         """,
-        (user_id,),
+        (user_id, user_id, user_email, user_email),
     ) as cursor:
         rows = await cursor.fetchall()
     by_parent: Dict[Optional[str], List[Dict[str, Any]]] = {}
@@ -871,8 +1064,119 @@ async def duplicate_taxonomy(process_id: str, user_id: str = Depends(get_current
         "INSERT INTO process_taxonomy (id, user_id, name, description, code, level, parent_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (new_id, user_id, f"{row['name']} (Copy)", row["description"], row["code"], row["level"], row["parent_id"], sort_order),
     )
+    await _ensure_creator_owner_assignment(conn, new_id)
     await conn.commit()
     return {"id": new_id, "name": f"{row['name']} (Copy)", "sort_order": sort_order}
+
+
+@app.post("/api/process-assignments")
+async def create_process_assignment(
+    payload: ProcessAssignmentCreateRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    conn = db.get_connection()
+    process_row = await _get_process_row(conn, payload.process_id)
+    if not process_row:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    role = _normalize_role(payload.role)
+    requester_ctx = await _get_requester_role_context(conn, payload.process_id, user_id)
+    if not requester_ctx["can_manage"]:
+        raise HTTPException(status_code=403, detail="Only owners or delegators can assign users")
+    if role == "owner" and not requester_ctx["is_owner"]:
+        raise HTTPException(status_code=403, detail="Only owners can assign owner role")
+
+    target_email = payload.user_email.lower()
+    async with conn.execute(
+        "SELECT id FROM users WHERE lower(email) = lower(?) LIMIT 1",
+        (target_email,),
+    ) as cursor:
+        target_user = await cursor.fetchone()
+    target_user_id = target_user["id"] if target_user else None
+
+    await conn.execute(
+        """
+        UPDATE process_assignments
+        SET is_active = 0
+        WHERE process_id = ? AND lower(user_email) = lower(?) AND is_active = 1
+        """,
+        (payload.process_id, target_email),
+    )
+    assignment_id = str(uuid.uuid4())
+    await conn.execute(
+        """
+        INSERT INTO process_assignments (id, process_id, user_email, user_id, role, assigned_by, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+        """,
+        (assignment_id, payload.process_id, target_email, target_user_id, role, user_id),
+    )
+    await conn.commit()
+
+    return {
+        "id": assignment_id,
+        "process_id": payload.process_id,
+        "user_email": target_email,
+        "user_id": target_user_id,
+        "role": role,
+        "assigned_by": user_id,
+        "is_active": True,
+    }
+
+
+@app.get("/api/process-assignments/process/{process_id}")
+async def list_process_assignments(process_id: str, user_id: str = Depends(get_current_user_id)):
+    conn = db.get_connection()
+    process_row = await _get_process_row(conn, process_id)
+    if not process_row:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    requester_ctx = await _get_requester_role_context(conn, process_id, user_id)
+    if not requester_ctx["has_access"]:
+        raise HTTPException(status_code=403, detail="You do not have permission to view assignments for this process")
+
+    assignments = await _get_effective_assignments(conn, process_id)
+    return assignments
+
+
+@app.delete("/api/process-assignments/{assignment_id}")
+async def delete_process_assignment(assignment_id: str, user_id: str = Depends(get_current_user_id)):
+    conn = db.get_connection()
+    async with conn.execute(
+        """
+        SELECT id, process_id, role
+        FROM process_assignments
+        WHERE id = ? AND is_active = 1
+        """,
+        (assignment_id,),
+    ) as cursor:
+        assignment_row = await cursor.fetchone()
+    if not assignment_row:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    process_id = assignment_row["process_id"]
+    requester_ctx = await _get_requester_role_context(conn, process_id, user_id)
+    if not requester_ctx["can_manage"]:
+        raise HTTPException(status_code=403, detail="Only owners or delegators can remove assignments")
+
+    if assignment_row["role"] == "owner":
+        if not requester_ctx["is_owner"]:
+            raise HTTPException(status_code=403, detail="Only owners can remove owner assignments")
+        async with conn.execute(
+            """
+            SELECT COUNT(*) AS owner_count
+            FROM process_assignments
+            WHERE process_id = ? AND role = 'owner' AND is_active = 1
+            """,
+            (process_id,),
+        ) as cursor:
+            owner_row = await cursor.fetchone()
+        owner_count = owner_row["owner_count"] if owner_row else 0
+        if owner_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the only owner from this process")
+
+    await conn.execute("UPDATE process_assignments SET is_active = 0 WHERE id = ?", (assignment_id,))
+    await conn.commit()
+    return {"ok": True}
 
 
 @app.post("/api/process-flows")
@@ -1227,20 +1531,90 @@ async def export_excel(payload: Dict[str, Any], user_id: str = Depends(get_curre
 
 @app.get("/api/dashboard/{user_id}")
 async def dashboard(user_id: str, current_user: Dict[str, Any] = Depends(verify_token)):
+    def _flow_has_start_and_end_nodes(flow_data_raw: Any) -> bool:
+        """A process is completed only if its flow contains both start and end nodes."""
+        if flow_data_raw is None:
+            return False
+
+        flow_data = flow_data_raw
+        if isinstance(flow_data_raw, str):
+            try:
+                flow_data = json.loads(flow_data_raw)
+            except Exception:
+                return False
+
+        if not isinstance(flow_data, dict):
+            return False
+
+        nodes = flow_data.get("nodes")
+        if not isinstance(nodes, list) or not nodes:
+            return False
+
+        has_start = False
+        has_end = False
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_type = str(node.get("type") or node.get("data", {}).get("type") or "").lower()
+            if node_type == "start":
+                has_start = True
+            elif node_type == "end":
+                has_end = True
+            if has_start and has_end:
+                return True
+
+        return False
+
     conn = db.get_connection()
-    async with conn.execute(
-        "SELECT id FROM process_taxonomy WHERE user_id = ?", (user_id,)
-    ) as cursor:
-        process_rows = await cursor.fetchall()
-    process_ids = [r["id"] for r in process_rows]
+    async with conn.execute("SELECT email FROM users WHERE id = ?", (user_id,)) as cursor:
+        user_row = await cursor.fetchone()
+    user_email = (user_row["email"] if user_row else None)
+
+    owned_process_ids: Set[str] = set()
+    async with conn.execute("SELECT id FROM process_taxonomy WHERE user_id = ?", (user_id,)) as cursor:
+        for row in await cursor.fetchall():
+            owned_process_ids.add(row["id"])
+
+    assigned_process_ids: Set[str] = set()
+    if user_email:
+        async with conn.execute(
+            """
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1
+              AND (user_id = ? OR lower(user_email) = lower(?))
+            """,
+            (user_id, user_email),
+        ) as cursor:
+            for row in await cursor.fetchall():
+                assigned_process_ids.add(row["process_id"])
+    else:
+        async with conn.execute(
+            """
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1 AND user_id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            for row in await cursor.fetchall():
+                assigned_process_ids.add(row["process_id"])
+
+    process_ids = list(owned_process_ids.union(assigned_process_ids))
 
     completed_ids = []
     for pid in process_ids:
         async with conn.execute(
-            "SELECT 1 FROM process_flows WHERE user_id = ? AND process_id = ? LIMIT 1",
-            (user_id, pid),
+            """
+            SELECT flow_data FROM process_flows
+            WHERE process_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (pid,),
         ) as cursor:
-            if await cursor.fetchone():
+            row = await cursor.fetchone()
+            if row and _flow_has_start_and_end_nodes(row["flow_data"]):
                 completed_ids.append(pid)
 
     total = len(process_ids)

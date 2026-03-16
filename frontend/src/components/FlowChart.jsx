@@ -1404,7 +1404,7 @@ const getLayoutedElements = (nodes, edges, direction = 'LR') => {
   return { nodes: layoutedNodes, edges };
 };
 
-const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initialFlowData, onSaveFlow, processId, flowId, processName, onStartRecording, onUploadDocument, onOpenRecordModal, isRecording, isPaused, onPauseRecording, onStopRecording, flowData, onSaveFinalize, selectedProcess, onChangeProcess, isProcessing, processingMessage }) => {
+const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initialFlowData, onSaveFlow, processId, flowId, processName, onStartRecording, onUploadDocument, isRecording, isPaused, onPauseRecording, onStopRecording, flowData, onSaveFinalize, selectedProcess, onChangeProcess, isProcessing, processingMessage }) => {
   const { getToken } = useAuth();
   const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState([]);

@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS process_flows (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS process_assignments (
+  id TEXT PRIMARY KEY,
+  process_id TEXT NOT NULL,
+  user_email TEXT NOT NULL,
+  user_id TEXT,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'delegator', 'delegatee')),
+  assigned_by TEXT NOT NULL,
+  assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  is_active INTEGER DEFAULT 1,
+  FOREIGN KEY (process_id) REFERENCES process_taxonomy(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_assignments_process_active
+ON process_assignments(process_id, is_active);
+
+CREATE INDEX IF NOT EXISTS idx_process_assignments_user_active
+ON process_assignments(user_email, is_active);
+
 CREATE TABLE IF NOT EXISTS process_flow_versions (
   id TEXT PRIMARY KEY,
   flow_id TEXT NOT NULL,
