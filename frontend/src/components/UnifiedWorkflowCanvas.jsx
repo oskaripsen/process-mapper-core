@@ -286,30 +286,30 @@ const UnifiedWorkflowCanvas = ({
       const formData = new FormData();
       formData.append('file', audioBlob, 'recording.webm');
 
+      const token = await getToken();
       const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        }
       });
 
       if (response.data.transcript) {
-        // Append new transcript to existing one (hidden from UI)
         const newChunk = response.data.transcript;
         let updatedTranscript = transcript ? `${transcript} ${newChunk}` : newChunk;
 
-        // Truncate to last 5000 chars to save tokens (keeps ~5 min of context)
         const MAX_TRANSCRIPT_CHARS = 5000;
         if (updatedTranscript.length > MAX_TRANSCRIPT_CHARS) {
           updatedTranscript = updatedTranscript.slice(-MAX_TRANSCRIPT_CHARS);
-          console.log(`✂️ Truncated transcript to last ${MAX_TRANSCRIPT_CHARS} chars (~5 min context)`);
+          console.log(`Truncated transcript to last ${MAX_TRANSCRIPT_CHARS} chars`);
         }
 
         setTranscript(updatedTranscript);
         console.log('Updated transcript:', updatedTranscript.substring(0, 100) + '...');
 
-        // Automatically generate/update flow from the transcript incrementally
         setProcessingMessage('Updating process flow...');
         const currentFlow = flowDataRef.current || { nodes: [], edges: [] };
 
-        // Collect user edits from user_modified nodes
         const userEdits = [];
         if (currentFlow.nodes) {
           currentFlow.nodes.forEach(node => {
@@ -324,11 +324,10 @@ const UnifiedWorkflowCanvas = ({
           });
         }
 
-        console.log('📤 Sending incremental flow request with existing flow:', {
+        console.log('Sending incremental flow request:', {
           existingNodeCount: currentFlow.nodes?.length || 0,
           existingEdgeCount: currentFlow.edges?.length || 0,
           userEditsCount: userEdits.length,
-          validationErrorsCount: currentFlow.validationErrors?.length || 0
         });
 
         const incrementalResponse = await axios.post(`${API_BASE_URL}/generate-incremental-flow`, {
@@ -337,17 +336,33 @@ const UnifiedWorkflowCanvas = ({
           existingFlow: currentFlow,
           sessionId: Date.now(),
           validationErrors: currentFlow.validationErrors || null,
-          userEdits: userEdits.length > 0 ? userEdits : null
+          userEdits: userEdits.length > 0 ? userEdits : null,
+          extractedIntent: null,
+        }, {
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          }
         });
 
         if (incrementalResponse.data && incrementalResponse.data.nodes) {
-          console.log('🎤 Flow updated incrementally from audio chunk:', {
-            nodeCount: incrementalResponse.data.nodes.length,
-            edgeCount: incrementalResponse.data.edges?.length,
-            nodes: incrementalResponse.data.nodes.map(n => ({ id: n.id, type: n.type, label: n.data?.label }))
-          });
+          // Preserve user-positioned nodes
+          if (currentFlow.nodes && currentFlow.nodes.length > 0) {
+            const existingPositions = new Map();
+            currentFlow.nodes.forEach(node => {
+              if (node.position) {
+                existingPositions.set(node.id, node.position);
+              }
+            });
+            incrementalResponse.data.nodes = incrementalResponse.data.nodes.map(node => {
+              const existingPosition = existingPositions.get(node.id);
+              if (existingPosition) {
+                return { ...node, position: existingPosition };
+              }
+              return node;
+            });
+          }
+
           handleFlowGenerated(incrementalResponse.data, 'voice');
-          console.log('✅ handleFlowGenerated called with voice mode');
         }
 
         setIsProcessing(false);
@@ -357,8 +372,6 @@ const UnifiedWorkflowCanvas = ({
     } catch (error) {
       console.error('Transcription/Flow generation error:', error);
       setIsProcessing(false);
-      // Don't show error toast for transcription failures (often due to silent audio)
-      // onError('Failed to process audio chunk: ' + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -370,8 +383,12 @@ const UnifiedWorkflowCanvas = ({
       const formData = new FormData();
       formData.append('file', audioBlob, 'recording.webm');
 
+      const token = await getToken();
       const response = await axios.post(`${API_BASE_URL}/transcribe`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        }
       });
 
       if (response.data.transcript) {

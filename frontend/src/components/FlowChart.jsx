@@ -5366,24 +5366,11 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
             }}>
               {selectedProcess?.name || 'Process'}
             </div>
-            {workshopSession && (
-              <div style={{ fontSize: '0.75rem', color: '#666', marginLeft: '1rem' }}>
-                Workshop Session: {workshopSession.id} | Started: {workshopSession.startTime.toLocaleTimeString()}
-                {isLiveMode && (
-                  <div
-                    className={recordingStatus === 'recording' ? 'recording-status' : ''}
-                    style={{
-                      marginTop: '0.25rem',
-                      color: recordingStatus === 'recording' ? '#dc3545' :
-                        recordingStatus === 'processing' ? '#ffc107' : '#28a745',
-                      fontWeight: 'bold'
-                    }}
-                  >
-                    {recordingStatus === 'recording' && <span className="recording-indicator"></span>}
-                    {recordingStatus === 'recording' ? 'RECORDING...' :
-                      recordingStatus === 'processing' ? 'PROCESSING...' : 'READY'}
-                  </div>
-                )}
+            {/* Voice mode status indicator */}
+            {workflowType === 'voice' && isRecording && (
+              <div style={{ fontSize: '0.8rem', color: '#dc3545', fontWeight: '600', marginLeft: '1rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#dc3545', display: 'inline-block', animation: 'pulse-subtle 1.5s infinite' }} />
+                Listening...
               </div>
             )}
           </div>
@@ -5403,8 +5390,8 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
               </div>
             )}
 
-            {/* Speak Button - Commented out for deployment */}
-            {/* {onStartRecording && (
+            {/* Speak Button */}
+            {onStartRecording && (
               !isRecording ? (
                 <button
                   className="header-button"
@@ -5424,12 +5411,12 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
                     gap: '6px'
                   }}
                   onMouseEnter={(e) => {
-                    e.target.style.background = 'var(--color-accent-hover)';
-                    e.target.style.borderColor = 'var(--color-primary-hover)';
+                    e.currentTarget.style.background = 'var(--color-accent-hover)';
+                    e.currentTarget.style.borderColor = 'var(--color-primary-hover)';
                   }}
                   onMouseLeave={(e) => {
-                    e.target.style.background = 'var(--color-surface)';
-                    e.target.style.borderColor = 'var(--color-primary)';
+                    e.currentTarget.style.background = 'var(--color-surface)';
+                    e.currentTarget.style.borderColor = 'var(--color-primary)';
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -5477,48 +5464,6 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
                   </button>
                 </>
               )
-            )} */}
-
-            {/* Record Button */}
-            {onOpenRecordModal && (
-              <button
-                className="header-button"
-                onClick={onOpenRecordModal}
-                disabled={isProcessing}
-                style={{
-                  background: isProcessing ? 'var(--color-background)' : 'var(--color-surface)',
-                  color: isProcessing ? 'var(--color-text-secondary)' : 'var(--color-primary)',
-                  border: `1px solid ${isProcessing ? 'var(--color-text-secondary)' : 'var(--color-primary)'}`,
-                  padding: '8px 16px',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: '500',
-                  cursor: isProcessing ? 'not-allowed' : 'pointer',
-                  transition: 'all 0.2s ease',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  opacity: isProcessing ? 0.6 : 1
-                }}
-                onMouseEnter={(e) => {
-                  if (!isProcessing) {
-                    e.currentTarget.style.background = 'var(--color-accent-hover)';
-                    e.currentTarget.style.borderColor = 'var(--color-primary-hover)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isProcessing) {
-                    e.currentTarget.style.background = 'var(--color-surface)';
-                    e.currentTarget.style.borderColor = 'var(--color-primary)';
-                  }
-                }}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M23 7l-7 5 7 5V7z"/>
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-                </svg>
-                Record
-              </button>
             )}
 
             {/* Chat Button */}
@@ -5729,8 +5674,8 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
           </div>
         </div>
         <div className="controls">
-          {/* Generate Flow Button - Only for upload and manual workflows */}
-          {(workflowType === 'upload' || workflowType === 'manual' || workflowType === 'voice') && transcript && (
+          {/* Generate Flow Button - Only for upload and manual workflows (voice auto-generates) */}
+          {(workflowType === 'upload' || workflowType === 'manual') && transcript && (
             <button
               className="control-button"
               onClick={generateFlow}
