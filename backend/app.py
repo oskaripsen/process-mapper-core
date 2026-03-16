@@ -260,49 +260,11 @@ async def _update_subtree_levels(conn, user_id: str, root_id: str, level: int) -
 
 async def init_schema():
     conn = db.get_connection()
-    await conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            username TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
+    schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
+    with open(schema_path, "r", encoding="utf-8") as f:
+        await conn.executescript(f.read())
 
-        CREATE TABLE IF NOT EXISTS process_taxonomy (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
-            code TEXT,
-            level INTEGER DEFAULT 0,
-            parent_id TEXT,
-            sort_order INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS process_flows (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            process_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            flow_data TEXT NOT NULL,
-            version INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS process_flow_versions (
-            id TEXT PRIMARY KEY,
-            flow_id TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            flow_data TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """
-    )
+    # Backward-compatible additive migrations for existing DBs.
     sop_migrations = [
         ("process_taxonomy", "sort_order", "INTEGER DEFAULT 0"),
         ("process_taxonomy", "sop_status", "TEXT"),

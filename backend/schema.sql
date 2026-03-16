@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS process_taxonomy (
   level INTEGER DEFAULT 0,
   parent_id TEXT,
   sort_order INTEGER DEFAULT 0,
+  sop_status TEXT,
+  sop_draft_url TEXT,
+  sop_final_url TEXT,
+  sop_final_pdf_url TEXT,
+  sop_generated_at TEXT,
+  sop_finalized_at TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -38,5 +44,7 @@ CREATE TABLE IF NOT EXISTS process_flow_versions (
   flow_id TEXT NOT NULL,
   version INTEGER NOT NULL,
   flow_data TEXT NOT NULL,
+  sop_url TEXT,
+  version_type TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
