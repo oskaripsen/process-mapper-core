@@ -5,11 +5,9 @@ import DecisionNode from './DecisionNode';
 import MergeNode from './MergeNode';
 
 export const nodeTypes = {
-  startNode: StartNode,
-  endNode: EndNode,
-  defaultNode: DefaultNode,
-  decisionNode: DecisionNode,
-  mergeNode: MergeNode,
+  decision: DecisionNode,
+  default: DefaultNode,
+  merge: MergeNode,
+  start: StartNode,
+  end: EndNode,
 };
-
-export const edgeTypes = {};

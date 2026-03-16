@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import axios from 'axios';
 import { API_BASE_URL, authenticatedFetch } from '../config/api';
 import { useAuth } from '../context/AuthContext';
-import FlowChart from './FlowChart';
+import FlowChart from './flowchart/FlowChart';
 import FileUpload from './FileUpload';
 import DocumentUpload from './DocumentUpload';
 
