@@ -227,11 +227,53 @@ async def _get_user_email(conn, user_id: str) -> Optional[str]:
 
 async def _get_process_row(conn, process_id: str) -> Optional[Dict[str, Any]]:
     async with conn.execute(
-        "SELECT id, user_id, parent_id, name FROM process_taxonomy WHERE id = ?",
+        "SELECT id, user_id, parent_id, level, name FROM process_taxonomy WHERE id = ?",
         (process_id,),
     ) as cursor:
         row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def _get_access_request_email(conn, process_id: Optional[str]) -> Optional[str]:
+    if not process_id:
+        return None
+
+    async with conn.execute(
+        """
+        SELECT pa.user_email
+        FROM process_assignments pa
+        WHERE pa.process_id = ? AND pa.role = 'owner' AND pa.is_active = 1
+        ORDER BY pa.assigned_at ASC
+        LIMIT 1
+        """,
+        (process_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+    if row and row["user_email"]:
+        return row["user_email"]
+
+    process_row = await _get_process_row(conn, process_id)
+    if not process_row:
+        return None
+    return await _get_user_email(conn, process_row["user_id"])
+
+
+async def _raise_level_access_denied(
+    conn,
+    reference_process_id: Optional[str],
+    action: str,
+) -> None:
+    reference = await _get_process_row(conn, reference_process_id) if reference_process_id else None
+    owner_email = await _get_access_request_email(conn, reference_process_id)
+    detail = (
+        f"This is not allowed. {action} can only be done if you have owner or delegator rights "
+        f"one level above."
+    )
+    if reference and reference.get("level") is not None:
+        detail += f" Required access: L{reference['level']}."
+    if owner_email:
+        detail += f" Request access from {owner_email}."
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def _ensure_creator_owner_assignment(conn, process_id: str) -> None:
@@ -348,6 +390,51 @@ async def _get_requester_role_context(conn, process_id: str, user_id: str) -> Di
         "is_delegator": is_delegator,
         "can_manage": can_manage,
     }
+
+
+async def _can_view_process_in_tree(conn, process_id: str, user_id: str) -> bool:
+    user_email = await _get_user_email(conn, user_id)
+    async with conn.execute(
+        """
+        WITH RECURSIVE
+        seed(id) AS (
+            SELECT id
+            FROM process_taxonomy
+            WHERE user_id = ?
+            UNION
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1
+              AND (
+                  user_id = ?
+                  OR (? IS NOT NULL AND lower(user_email) = lower(?))
+              )
+        ),
+        down(id) AS (
+            SELECT id FROM seed
+            UNION
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN down d ON pt.parent_id = d.id
+        ),
+        up(id, parent_id) AS (
+            SELECT pt.id, pt.parent_id
+            FROM process_taxonomy pt
+            WHERE pt.id IN (SELECT id FROM down)
+            UNION
+            SELECT pt.id, pt.parent_id
+            FROM process_taxonomy pt
+            JOIN up ON up.parent_id = pt.id
+        )
+        SELECT 1
+        FROM up
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (user_id, user_id, user_email, user_email, process_id),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row is not None
 
 
 async def _next_sibling_sort_order(
@@ -872,6 +959,28 @@ async def clarify_process_intent(payload: Dict[str, Any], user: Dict[str, Any] =
 @app.post("/api/process-taxonomy")
 async def create_taxonomy(item: TaxonomyCreate, user_id: str = Depends(get_current_user_id)):
     conn = db.get_connection()
+    if item.level < 0 or item.level > 3:
+        raise HTTPException(status_code=400, detail="Process level must be between L0 and L3")
+
+    if item.parent_id:
+        parent_row = await _get_process_row(conn, item.parent_id)
+        if not parent_row:
+            raise HTTPException(status_code=404, detail="Parent process not found")
+
+        parent_level = int(parent_row.get("level", 0))
+        expected_level = parent_level + 1
+        if expected_level > 3:
+            raise HTTPException(status_code=400, detail="Cannot create process beyond level L3")
+        if item.level != expected_level:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid level for child process. Expected L{expected_level} under selected parent.",
+            )
+
+        parent_ctx = await _get_requester_role_context(conn, item.parent_id, user_id)
+        if not parent_ctx["can_manage"]:
+            await _raise_level_access_denied(conn, item.parent_id, "Creating a sub-process")
+
     item_id = str(uuid.uuid4())
     sort_order = item.sort_order
     if sort_order is None:
@@ -980,7 +1089,94 @@ async def update_taxonomy(process_id: str, item: TaxonomyUpdate, user_id: str = 
 @app.delete("/api/process-taxonomy/{process_id}")
 async def delete_taxonomy(process_id: str, user_id: str = Depends(get_current_user_id)):
     conn = db.get_connection()
-    await conn.execute("DELETE FROM process_taxonomy WHERE id = ? AND user_id = ?", (process_id, user_id))
+    async with conn.execute(
+        "SELECT id, user_id, parent_id, level FROM process_taxonomy WHERE id = ?",
+        (process_id,),
+    ) as cursor:
+        root_row = await cursor.fetchone()
+    if not root_row:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    requester_ctx = await _get_requester_role_context(conn, process_id, user_id)
+    can_view_target = requester_ctx["has_access"] or await _can_view_process_in_tree(conn, process_id, user_id)
+    if not can_view_target:
+        raise HTTPException(status_code=403, detail="You do not have permission to delete this process")
+
+    async with conn.execute(
+        "SELECT COUNT(*) AS child_count FROM process_taxonomy WHERE parent_id = ?",
+        (process_id,),
+    ) as cursor:
+        child_row = await cursor.fetchone()
+    child_count = child_row["child_count"] if child_row else 0
+    is_leaf_delete = int(root_row["level"]) == 3 or child_count == 0
+    parent_id = root_row["parent_id"]
+
+    if is_leaf_delete:
+        # Leaf deletes are allowed only if the user manages the parent level
+        # (or the node itself when it is a root/owner-created leaf).
+        if parent_id:
+            parent_ctx = await _get_requester_role_context(conn, parent_id, user_id)
+            if not parent_ctx["can_manage"]:
+                await _raise_level_access_denied(conn, parent_id, "Deleting this process")
+        elif not requester_ctx["can_manage"]:
+            await _raise_level_access_denied(conn, process_id, "Deleting this process")
+    elif not requester_ctx["can_manage"]:
+        owner_email = await _get_access_request_email(conn, process_id)
+        detail = (
+            "This is not allowed. Deleting a process with sub-processes requires owner or delegator "
+            "rights on this process."
+        )
+        if owner_email:
+            detail += f" Request access from {owner_email}."
+        raise HTTPException(status_code=403, detail=detail)
+
+    # Delete full subtree + dependent records to satisfy FK constraints.
+    async with conn.execute(
+        """
+        WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM process_taxonomy WHERE id = ?
+            UNION ALL
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN subtree s ON pt.parent_id = s.id
+        )
+        SELECT id FROM subtree
+        """,
+        (process_id,),
+    ) as cursor:
+        subtree_rows = await cursor.fetchall()
+    subtree_ids = [row["id"] for row in subtree_rows]
+    if not subtree_ids:
+        raise HTTPException(status_code=404, detail="Process not found")
+
+    subtree_placeholders = ",".join("?" for _ in subtree_ids)
+
+    await conn.execute(
+        f"DELETE FROM process_assignments WHERE process_id IN ({subtree_placeholders})",
+        tuple(subtree_ids),
+    )
+
+    async with conn.execute(
+        f"SELECT id FROM process_flows WHERE process_id IN ({subtree_placeholders})",
+        tuple(subtree_ids),
+    ) as cursor:
+        flow_rows = await cursor.fetchall()
+    flow_ids = [row["id"] for row in flow_rows]
+    if flow_ids:
+        flow_placeholders = ",".join("?" for _ in flow_ids)
+        await conn.execute(
+            f"DELETE FROM process_flow_versions WHERE flow_id IN ({flow_placeholders})",
+            tuple(flow_ids),
+        )
+
+    await conn.execute(
+        f"DELETE FROM process_flows WHERE process_id IN ({subtree_placeholders})",
+        tuple(subtree_ids),
+    )
+    await conn.execute(
+        f"DELETE FROM process_taxonomy WHERE id IN ({subtree_placeholders})",
+        tuple(subtree_ids),
+    )
     await conn.commit()
     return {"ok": True}
 
@@ -989,23 +1185,35 @@ async def delete_taxonomy(process_id: str, user_id: str = Depends(get_current_us
 async def move_taxonomy(process_id: str, payload: TaxonomyMoveRequest, user_id: str = Depends(get_current_user_id)):
     conn = db.get_connection()
     async with conn.execute(
-        "SELECT id, level, parent_id FROM process_taxonomy WHERE id = ? AND user_id = ?",
-        (process_id, user_id),
+        "SELECT id, level, parent_id, user_id FROM process_taxonomy WHERE id = ?",
+        (process_id,),
     ) as cursor:
         source_row = await cursor.fetchone()
     if not source_row:
         raise HTTPException(status_code=404, detail="Process not found")
 
+    source_parent_id = source_row["parent_id"]
+    if source_row["user_id"] != user_id:
+        if source_parent_id:
+            source_parent_ctx = await _get_requester_role_context(conn, source_parent_id, user_id)
+            if not source_parent_ctx["can_manage"]:
+                await _raise_level_access_denied(conn, source_parent_id, "Moving this process")
+        else:
+            await _raise_level_access_denied(conn, process_id, "Moving this process")
+
     new_parent_id = payload.parent_id
     new_level = 0
     if new_parent_id is not None:
         async with conn.execute(
-            "SELECT id, level FROM process_taxonomy WHERE id = ? AND user_id = ?",
-            (new_parent_id, user_id),
+            "SELECT id, level FROM process_taxonomy WHERE id = ?",
+            (new_parent_id,),
         ) as cursor:
             parent_row = await cursor.fetchone()
         if not parent_row:
             raise HTTPException(status_code=404, detail="New parent not found")
+        target_parent_ctx = await _get_requester_role_context(conn, new_parent_id, user_id)
+        if not target_parent_ctx["can_manage"]:
+            await _raise_level_access_denied(conn, new_parent_id, "Moving this process")
         new_level = parent_row["level"] + 1
 
     if new_level > 3:
@@ -1131,7 +1339,7 @@ async def list_process_assignments(process_id: str, user_id: str = Depends(get_c
         raise HTTPException(status_code=404, detail="Process not found")
 
     requester_ctx = await _get_requester_role_context(conn, process_id, user_id)
-    if not requester_ctx["has_access"]:
+    if not requester_ctx["has_access"] and not await _can_view_process_in_tree(conn, process_id, user_id):
         raise HTTPException(status_code=403, detail="You do not have permission to view assignments for this process")
 
     assignments = await _get_effective_assignments(conn, process_id)

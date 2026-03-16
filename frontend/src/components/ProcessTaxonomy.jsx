@@ -180,13 +180,20 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
       setNewItem({ name: '', description: '', code: '', level: 0, parent_id: null });
       setShowAddForm(false);
       setEditingItem(null);
+      setError('');
+      setShowError(false);
     } catch (err) {
       setError(err.message);
     }
   };
 
   const handleDeleteItem = async (item) => {
-    if (!window.confirm(`Are you sure you want to delete "${item.name}" and all its children? This action cannot be undone.`)) {
+    const hasChildren = item.children && item.children.length > 0;
+    const warningMessage = hasChildren
+      ? `Are you sure you want to delete "${item.name}" and all its sub-processes? This will delete it for you and everyone else with access. This action cannot be undone.`
+      : `Are you sure you want to delete "${item.name}"? This will delete it for you and everyone else with access. This action cannot be undone.`;
+
+    if (!window.confirm(warningMessage)) {
       return;
     }
     
@@ -520,6 +527,13 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
   };
 
   const handleRoleChange = async (assign, newRole) => {
+    if (newRole === 'owner' && currentUserRole !== 'owner') {
+      setError('Only owners can assign owner access.');
+      setShowError(true);
+      setTimeout(() => setShowError(false), 5000);
+      return;
+    }
+
     // Check if trying to change last owner
     if (isLastOwner(assign)) {
       setError('Cannot change the role of the last owner. Transfer ownership to another user first.');
@@ -550,14 +564,7 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
 
   const performRoleChange = async (assignmentId, userEmail, newRole) => {
     try {
-      // Delete old assignment
-      await authenticatedFetch(
-        `${API_BASE_URL}/api/process-assignments/${assignmentId}`,
-        { method: 'DELETE' },
-        getToken
-      );
-      // Create new assignment with updated role
-      await authenticatedFetch(
+      const response = await authenticatedFetch(
         `${API_BASE_URL}/api/process-assignments`,
         {
           method: 'POST',
@@ -569,10 +576,14 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
         },
         getToken
       );
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to update role');
+      }
       // Reload assignments
       await loadProcessAssignments(showAssignmentForm);
     } catch (err) {
-      setError('Failed to update role');
+      setError(err.message || 'Failed to update role');
       setShowError(true);
       setTimeout(() => setShowError(false), 5000);
     }
@@ -581,6 +592,10 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
   const handleAssignUser = async (e) => {
     e.preventDefault();
     try {
+      if (assignment.role === 'owner' && currentUserRole !== 'owner') {
+        throw new Error('Only owners can assign owner access.');
+      }
+
       const response = await authenticatedFetch(
         `${API_BASE_URL}/api/process-assignments`,
         {
@@ -592,7 +607,10 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
         },
         getToken
       );
-      if (!response.ok) throw new Error('Failed to assign user');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Failed to assign user');
+      }
       setAssignment({ user_email: '', role: 'delegatee' });
       // Reload assignments to show the new one
       await loadProcessAssignments(showAssignmentForm);
@@ -1270,6 +1288,20 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
               </button>
             </div>
             <form onSubmit={handleAddItem} className="modal-body">
+              {error && (
+                <div style={{
+                  marginBottom: '1rem',
+                  padding: '0.75rem 1rem',
+                  borderRadius: '8px',
+                  border: '1px solid #f5c2c7',
+                  background: '#f8d7da',
+                  color: '#842029',
+                  fontSize: '0.95rem',
+                  lineHeight: 1.4
+                }}>
+                  {error}
+                </div>
+              )}
               <div className="form-group">
                 <label>Process Name *</label>
                 <input
