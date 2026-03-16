@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 function LoginPage() {
   const { login, register } = useAuth();
   const [mode, setMode] = useState('login');
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -16,9 +16,9 @@ function LoginPage() {
     setLoading(true);
     try {
       if (mode === 'login') {
-        await login(email, password);
+        await login(identifier, password);
       } else {
-        await register(email, username, password);
+        await register(identifier, username, password);
       }
     } catch (err) {
       setError(err.message || 'Authentication failed');
@@ -35,11 +35,11 @@ function LoginPage() {
         <form onSubmit={submit} className="auth-form">
           <input
             className="auth-input"
-            type="email"
-            placeholder="Email"
+            type={mode === 'login' ? 'text' : 'email'}
+            placeholder={mode === 'login' ? 'Email or Username' : 'Email'}
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
           />
           {mode === 'register' && (
             <input

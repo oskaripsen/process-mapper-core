@@ -188,6 +188,13 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
   };
 
   const handleDeleteItem = async (item) => {
+    if (!item.can_delete) {
+      setError('You do not have permission to delete this process.');
+      setShowError(true);
+      setTimeout(() => setShowError(false), 5000);
+      return;
+    }
+
     const hasChildren = item.children && item.children.length > 0;
     const warningMessage = hasChildren
       ? `Are you sure you want to delete "${item.name}" and all its sub-processes? This will delete it for you and everyone else with access. This action cannot be undone.`
@@ -670,42 +677,51 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
 
   const getFilteredTaxonomy = () => {
     if (completionFilter === 'all') return taxonomy;
-    
-    // Filter based on whether L3 processes have flows
-    const filterRecursively = (items) => {
-      return items.map(item => {
-        const filteredItem = { ...item };
-        
-        // Filter children recursively first
-        if (item.children && item.children.length > 0) {
-          filteredItem.children = filterRecursively(item.children);
-        }
-        
-        return filteredItem;
-      }).filter(item => {
-        // For L3 processes (level 3), check if they have flows
-        if (item.level === 3) {
-          // Use backend-calculated completion status which considers all flows (including assigned ones)
-          // and checks for start/end nodes
-          const isCompleted = dashboardData?.completed_process_ids?.includes(item.id);
-          
-          if (completionFilter === 'completed') {
-            return isCompleted;
-          } else if (completionFilter === 'not_completed') {
-            return !isCompleted;
-          }
-        }
-        
-        // For parent levels (L0, L1, L2), ONLY keep them if they have children after filtering
-        // This hides parent levels when all their L3 descendants are filtered out
-        if (item.level < 3) {
-          return item.children && item.children.length > 0;
-        }
-        
-        return false;
-      });
+
+    const hasCompletedDescendantL3 = (item) => {
+      if (item.level === 3) {
+        return isL3ProcessCompleted(item.id);
+      }
+      return (item.children || []).some(child => hasCompletedDescendantL3(child));
     };
-    
+
+    const hasIncompleteDescendantOrSelf = (item) => {
+      if (!isProcessCompleted(item)) {
+        return true;
+      }
+      return (item.children || []).some(child => hasIncompleteDescendantOrSelf(child));
+    };
+
+    const filterRecursively = (items) => {
+      return items
+        .map(item => {
+          const filteredChildren = item.children && item.children.length > 0
+            ? filterRecursively(item.children)
+            : [];
+
+          return {
+            ...item,
+            children: filteredChildren
+          };
+        })
+        .filter(item => {
+          if (completionFilter === 'completed') {
+            if (item.level === 3) {
+              return isL3ProcessCompleted(item.id);
+            }
+            // Keep parent levels only as context for completed L3 descendants.
+            return hasCompletedDescendantL3(item);
+          }
+
+          if (completionFilter === 'not_completed') {
+            // Keep any node that is not fully completed, including trees with no L3 yet.
+            return hasIncompleteDescendantOrSelf(item);
+          }
+
+          return true;
+        });
+    };
+
     return filterRecursively(taxonomy);
   };
 
@@ -973,7 +989,11 @@ const ProcessTaxonomy = ({ onNavigateToWorkflow }) => {
                   </button>
                   <button 
                     className="danger"
+                    disabled={!item.can_delete}
+                    title={item.can_delete ? 'Delete' : 'You do not have permission to delete this process'}
+                    style={{ opacity: item.can_delete ? 1 : 0.5, cursor: item.can_delete ? 'pointer' : 'not-allowed' }}
                     onClick={() => {
+                      if (!item.can_delete) return;
                       handleDeleteItem(item);
                       setShowMoreActions(null);
                     }}

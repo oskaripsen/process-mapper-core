@@ -23,7 +23,6 @@ import axios from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import jsPDF from 'jspdf';
 import EditableEdge from './edges/EditableEdge';
-import UpgradeDialog from './UpgradeDialog';
 import ScreenshotBrowserModal from './ScreenshotBrowserModal';
 
 
@@ -1406,7 +1405,6 @@ const getLayoutedElements = (nodes, edges, direction = 'LR') => {
 
 const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initialFlowData, onSaveFlow, processId, flowId, processName, onStartRecording, onUploadDocument, isRecording, isPaused, onPauseRecording, onStopRecording, flowData, onSaveFinalize, selectedProcess, onChangeProcess, isProcessing, processingMessage }) => {
   const { getToken } = useAuth();
-  const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState([]);
 
@@ -4820,11 +4818,7 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
       await fetchSopStatus(targetProcessId);
     } catch (error) {
       console.error('Error exporting SOP:', error);
-      if (error.message && error.message.includes('reached your AI-generated SOP limit')) {
-        setShowUpgradeDialog(true);
-      } else {
-        alert('Failed to export SOP: ' + error.message);
-      }
+      alert('Failed to export SOP: ' + error.message);
       setSopExportStatus('idle');
     }
   };
@@ -6931,11 +6925,6 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
             </div>
           </div>
         )}
-
-        <UpgradeDialog 
-          isOpen={showUpgradeDialog} 
-          onClose={() => setShowUpgradeDialog(false)} 
-        />
 
         {/* Screenshot Browser Modal */}
         {ENABLE_SCREENSHOTS ? (

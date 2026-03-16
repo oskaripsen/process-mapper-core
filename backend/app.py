@@ -146,7 +146,8 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    identifier: Optional[str] = None
+    email: Optional[EmailStr] = None
     password: str
 
 
@@ -571,10 +572,19 @@ async def register(payload: RegisterRequest):
 
 @app.post("/api/auth/login")
 async def login(payload: LoginRequest):
+    login_identifier = (payload.identifier or payload.email or "").strip()
+    if not login_identifier:
+        raise HTTPException(status_code=400, detail="Email or username is required")
+
+    normalized_identifier = login_identifier.lower()
     conn = db.get_connection()
     async with conn.execute(
-        "SELECT id, email, username, password_hash FROM users WHERE email = ?",
-        (payload.email.lower(),),
+        """
+        SELECT id, email, username, password_hash FROM users
+        WHERE lower(email) = ? OR lower(username) = ?
+        LIMIT 1
+        """,
+        (normalized_identifier, normalized_identifier),
     ) as cursor:
         user = await cursor.fetchone()
     if not user or not verify_password(payload.password, user["password_hash"]):
@@ -1007,6 +1017,65 @@ async def list_taxonomy(user_id: str = Depends(get_current_user_id)):
     async with conn.execute(
         """
         WITH RECURSIVE
+        owner_seed(id) AS (
+            SELECT id
+            FROM process_taxonomy
+            WHERE user_id = ?
+            UNION
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1
+              AND role = 'owner'
+              AND (
+                  user_id = ?
+                  OR (? IS NOT NULL AND lower(user_email) = lower(?))
+              )
+        ),
+        owner_scope(id) AS (
+            SELECT id FROM owner_seed
+            UNION
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN owner_scope os ON pt.parent_id = os.id
+        )
+        SELECT DISTINCT id FROM owner_scope
+        """,
+        (user_id, user_id, user_email, user_email),
+    ) as cursor:
+        owner_rows = await cursor.fetchall()
+    owner_ids = {row["id"] for row in owner_rows}
+
+    async with conn.execute(
+        """
+        WITH RECURSIVE
+        delegator_seed(id) AS (
+            SELECT process_id
+            FROM process_assignments
+            WHERE is_active = 1
+              AND role = 'delegator'
+              AND (
+                  user_id = ?
+                  OR (? IS NOT NULL AND lower(user_email) = lower(?))
+              )
+        ),
+        delegator_scope(id) AS (
+            SELECT id FROM delegator_seed
+            UNION
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN delegator_scope ds ON pt.parent_id = ds.id
+        )
+        SELECT DISTINCT id FROM delegator_scope
+        """,
+        (user_id, user_email, user_email),
+    ) as cursor:
+        delegator_rows = await cursor.fetchall()
+    delegator_ids = {row["id"] for row in delegator_rows}
+    manageable_ids = owner_ids.union(delegator_ids)
+
+    async with conn.execute(
+        """
+        WITH RECURSIVE
         seed(id) AS (
             SELECT id
             FROM process_taxonomy
@@ -1058,6 +1127,29 @@ async def list_taxonomy(user_id: str = Depends(get_current_user_id)):
     for row in rows:
         node = dict(row)
         by_parent.setdefault(node["parent_id"], []).append(node)
+
+    for siblings in by_parent.values():
+        siblings.sort(key=lambda node: (node.get("sort_order", 0), node.get("name", "")))
+
+    child_counts = {parent_id: len(children) for parent_id, children in by_parent.items()}
+    for siblings in by_parent.values():
+        for node in siblings:
+            node_id = node["id"]
+            parent_id = node.get("parent_id")
+            is_owner = node_id in owner_ids
+            is_delegator = node_id in delegator_ids
+            can_manage = node_id in manageable_ids
+            is_leaf_delete = int(node.get("level", 0)) == 3 or child_counts.get(node_id, 0) == 0
+            if is_owner:
+                can_delete = True
+            elif is_leaf_delete:
+                can_delete = is_delegator
+            else:
+                can_delete = bool(parent_id) and parent_id in delegator_ids
+            node["is_owner"] = is_owner
+            node["is_delegator"] = is_delegator
+            node["can_manage"] = can_manage
+            node["can_delete"] = can_delete
 
     def build_tree(parent_id: Optional[str]) -> List[Dict[str, Any]]:
         children = by_parent.get(parent_id, [])
@@ -1111,24 +1203,20 @@ async def delete_taxonomy(process_id: str, user_id: str = Depends(get_current_us
     is_leaf_delete = int(root_row["level"]) == 3 or child_count == 0
     parent_id = root_row["parent_id"]
 
-    if is_leaf_delete:
-        # Leaf deletes are allowed only if the user manages the parent level
-        # (or the node itself when it is a root/owner-created leaf).
-        if parent_id:
+    if requester_ctx["is_owner"]:
+        pass
+    elif requester_ctx["is_delegator"]:
+        if is_leaf_delete:
+            pass
+        elif parent_id:
             parent_ctx = await _get_requester_role_context(conn, parent_id, user_id)
-            if not parent_ctx["can_manage"]:
+            if not (parent_ctx["is_owner"] or parent_ctx["is_delegator"]):
                 await _raise_level_access_denied(conn, parent_id, "Deleting this process")
-        elif not requester_ctx["can_manage"]:
+        else:
             await _raise_level_access_denied(conn, process_id, "Deleting this process")
-    elif not requester_ctx["can_manage"]:
-        owner_email = await _get_access_request_email(conn, process_id)
-        detail = (
-            "This is not allowed. Deleting a process with sub-processes requires owner or delegator "
-            "rights on this process."
-        )
-        if owner_email:
-            detail += f" Request access from {owner_email}."
-        raise HTTPException(status_code=403, detail=detail)
+    else:
+        reference_id = parent_id if is_leaf_delete and parent_id else process_id
+        await _raise_level_access_denied(conn, reference_id, "Deleting this process")
 
     # Delete full subtree + dependent records to satisfy FK constraints.
     async with conn.execute(
@@ -1778,37 +1866,38 @@ async def dashboard(user_id: str, current_user: Dict[str, Any] = Depends(verify_
         user_row = await cursor.fetchone()
     user_email = (user_row["email"] if user_row else None)
 
-    owned_process_ids: Set[str] = set()
-    async with conn.execute("SELECT id FROM process_taxonomy WHERE user_id = ?", (user_id,)) as cursor:
-        for row in await cursor.fetchall():
-            owned_process_ids.add(row["id"])
-
-    assigned_process_ids: Set[str] = set()
-    if user_email:
-        async with conn.execute(
-            """
+    async with conn.execute(
+        """
+        WITH RECURSIVE
+        seed(id) AS (
+            SELECT id
+            FROM process_taxonomy
+            WHERE user_id = ?
+            UNION
             SELECT process_id
             FROM process_assignments
             WHERE is_active = 1
-              AND (user_id = ? OR lower(user_email) = lower(?))
-            """,
-            (user_id, user_email),
-        ) as cursor:
-            for row in await cursor.fetchall():
-                assigned_process_ids.add(row["process_id"])
-    else:
-        async with conn.execute(
-            """
-            SELECT process_id
-            FROM process_assignments
-            WHERE is_active = 1 AND user_id = ?
-            """,
-            (user_id,),
-        ) as cursor:
-            for row in await cursor.fetchall():
-                assigned_process_ids.add(row["process_id"])
-
-    process_ids = list(owned_process_ids.union(assigned_process_ids))
+              AND (
+                  user_id = ?
+                  OR (? IS NOT NULL AND lower(user_email) = lower(?))
+              )
+        ),
+        accessible(id) AS (
+            SELECT id FROM seed
+            UNION
+            SELECT pt.id
+            FROM process_taxonomy pt
+            JOIN accessible a ON pt.parent_id = a.id
+        )
+        SELECT DISTINCT pt.id
+        FROM process_taxonomy pt
+        WHERE pt.id IN (SELECT id FROM accessible)
+          AND pt.level = 3
+        """,
+        (user_id, user_id, user_email, user_email),
+    ) as cursor:
+        process_rows = await cursor.fetchall()
+    process_ids = [row["id"] for row in process_rows]
 
     completed_ids = []
     for pid in process_ids:

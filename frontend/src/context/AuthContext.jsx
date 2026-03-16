@@ -19,11 +19,11 @@ export function AuthProvider({ children }) {
     localStorage.setItem('pmc_user', JSON.stringify(session.user));
   };
 
-  const login = async (email, password) => {
+  const login = async (identifier, password) => {
     const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ identifier, password }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

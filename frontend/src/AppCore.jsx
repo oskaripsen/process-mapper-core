@@ -4,7 +4,6 @@ import UnifiedWorkflowCanvas from './components/UnifiedWorkflowCanvas';
 import ProcessTaxonomy from './components/ProcessTaxonomy';
 import ChatPanel from './components/ChatPanel';
 import LoginPage from './components/LoginPage';
-import UpgradeDialog from './components/UpgradeDialog';
 import { useAuth } from './context/AuthContext';
 
 function AppCore() {
@@ -16,7 +15,6 @@ function AppCore() {
   const [showL3ProcessSelector, setShowL3ProcessSelector] = useState(false);
   const [showLeaveWarning, setShowLeaveWarning] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState(null);
-  const [showUpgradeDialog, setShowUpgradeDialog] = useState(false);
   const [showLogoutWarning, setShowLogoutWarning] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [lastSavedTime, setLastSavedTime] = useState(null);
@@ -56,10 +54,6 @@ function AppCore() {
   };
 
   const handleError = (message) => {
-    if (typeof message === 'string' && message.includes('Flow limit reached')) {
-      setShowUpgradeDialog(true);
-      return;
-    }
     setError(message);
     setSuccess('');
   };
@@ -192,7 +186,6 @@ function AppCore() {
           </div>
         )}
 
-        <UpgradeDialog isOpen={showUpgradeDialog} onClose={() => setShowUpgradeDialog(false)} />
       </div>
     </div>
   );
