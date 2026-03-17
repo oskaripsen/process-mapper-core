@@ -136,6 +136,8 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
   const originalNodesRef = useRef(new Map()); // Track original node state for detecting changes
   const shiftKeyRef = useRef(false); // Track if Shift is pressed to block movement during resize
   const sopUploadRef = useRef(null);
+  const liveModeActiveRef = useRef(false); // Guards live restart/transcribe loops after stop
+  const liveRestartTimeoutRef = useRef(null); // Holds pending live recorder restart timeout
 
   // Store ReactFlow instance on init
   const onInit = useCallback((instance) => {
@@ -1578,6 +1580,7 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
     setFlowType('simple');
     setIsLiveMode(true);
     setIsPaused(false);
+    liveModeActiveRef.current = true;
 
     const newSession = {
       id: Date.now(),
@@ -1632,6 +1635,12 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
       };
 
       recorder.onstop = async () => {
+        if (workflowType === 'live' && !liveModeActiveRef.current) {
+          console.log('Live mode inactive - skipping onstop transcription');
+          chunks.length = 0;
+          setAudioChunks([]);
+          return;
+        }
         console.log('Recording stopped, processing audio blob...');
         const audioBlob = new Blob(chunks, { type: selectedMimeType });
         console.log('Created audio blob:', { size: audioBlob.size, type: audioBlob.type });
@@ -1652,6 +1661,11 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 
         // Set up interval to stop/restart recording every 10 seconds for live processing
         const liveProcessingInterval = setInterval(() => {
+          if (!liveModeActiveRef.current) {
+            console.log('Live mode inactive - clearing processing interval');
+            clearInterval(liveProcessingInterval);
+            return;
+          }
           console.log('Live processing interval triggered. Recorder state:', recorder?.state);
           // Check if recorder is actually recording - rely on recorder state, not React state
           if (recorder && recorder.state === 'recording') {
@@ -1659,8 +1673,12 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
             recorder.stop(); // This will trigger onstop and process the complete audio
 
             // Restart recording after a short delay
-            setTimeout(() => {
+            liveRestartTimeoutRef.current = setTimeout(() => {
               console.log('Attempting to restart. Recorder state:', recorder?.state);
+              if (!liveModeActiveRef.current) {
+                console.log('Skipping restart - live mode is no longer active');
+                return;
+              }
               if (recorder && recorder.state === 'inactive') {
                 console.log('Restarting recording for live mode...');
                 try {
@@ -1700,6 +1718,10 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
   };
 
   const stopRecording = () => {
+    if (liveRestartTimeoutRef.current) {
+      clearTimeout(liveRestartTimeoutRef.current);
+      liveRestartTimeoutRef.current = null;
+    }
     if (mediaRecorder && isRecording) {
       mediaRecorder.stop();
       setIsRecording(false);
@@ -1716,6 +1738,10 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 
   const processAudioBlob = async (audioBlob, retryCount = 0) => {
     try {
+      if (workflowType === 'live' && !liveModeActiveRef.current) {
+        console.log('Live mode inactive - skipping audio processing');
+        return;
+      }
       console.log('Processing audio blob:', { size: audioBlob.size, type: audioBlob.type, retry: retryCount });
 
       // Skip if audio blob is too small (likely empty or corrupted)
@@ -1827,6 +1853,10 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 
       // Retry logic for failed transcriptions
       if (retryCount < 2 && error.response?.status === 500) {
+        if (workflowType === 'live' && !liveModeActiveRef.current) {
+          console.log('Live mode inactive - skipping retry');
+          return;
+        }
         console.log(`Retrying audio processing (attempt ${retryCount + 1}/2)...`);
         setTimeout(() => {
           processAudioBlob(audioBlob, retryCount + 1);
@@ -1850,6 +1880,7 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
   const startLiveModeWithoutRecording = () => {
     setIsLiveMode(true);
     setIsPaused(false);
+    liveModeActiveRef.current = true;
 
     // Initialize workshop session
     if (!workshopSession) {
@@ -1867,6 +1898,11 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 
 
   const stopLiveMode = () => {
+    liveModeActiveRef.current = false;
+    if (liveRestartTimeoutRef.current) {
+      clearTimeout(liveRestartTimeoutRef.current);
+      liveRestartTimeoutRef.current = null;
+    }
     if (isRecording) {
       stopRecording();
     }
@@ -1929,6 +1965,11 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
   // Cleanup recording on unmount
   React.useEffect(() => {
     return () => {
+      liveModeActiveRef.current = false;
+      if (liveRestartTimeoutRef.current) {
+        clearTimeout(liveRestartTimeoutRef.current);
+        liveRestartTimeoutRef.current = null;
+      }
       if (mediaRecorder && isRecording) {
         mediaRecorder.stop();
       }
@@ -2787,11 +2828,8 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 `;
 
       if (swimlanes.size > 0) {
-        // Create collaboration with pools and lanes
-        bpmnXml += `  <bpmn:collaboration id="Collaboration_1">
-    <bpmn:participant id="Participant_1" name="Process" processRef="Process_1" />
-  </bpmn:collaboration>
-  <bpmn:process id="Process_1" isExecutable="false">
+        // No collaboration/participant wrapper — just the process with a laneSet avoids the redundant "Process" pool header
+        bpmnXml += `  <bpmn:process id="Process_1" isExecutable="false">
 `;
 
         // Add lane set
@@ -2851,7 +2889,7 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
 
       bpmnXml += `  </bpmn:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="${swimlanes.size > 0 ? 'Collaboration_1' : 'Process_1'}">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Process_1">
 `;
 
       // Initialize laneData outside the if block so it's accessible later
@@ -2878,15 +2916,10 @@ const FlowChart = ({ transcript, onError, onNewTranscript, workflowType, initial
         const poolWidth = maxX - minX + poolPadding * 2;
         const poolHeight = maxY - minY + poolPadding * 2;
 
-        bpmnXml += `      <bpmndi:BPMNShape id="Participant_1_di" bpmnElement="Participant_1" isHorizontal="true">
-        <dc:Bounds x="${poolX}" y="${poolY}" width="${poolWidth}" height="${poolHeight}" />
-      </bpmndi:BPMNShape>
-`;
-
         // Calculate lane positions and bounds
         let laneIndex = 0;
-        let currentY = poolY + 30; // Leave space for pool label
-        const laneHeight = (poolHeight - 30) / swimlanes.size;
+        let currentY = poolY;
+        const laneHeight = poolHeight / swimlanes.size;
 
         for (const [laneName, laneNodes] of swimlanes.entries()) {
           const laneId = `Lane_${laneIndex}`;

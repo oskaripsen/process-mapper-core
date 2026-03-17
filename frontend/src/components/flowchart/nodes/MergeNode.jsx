@@ -40,10 +40,12 @@ const MergeNode = ({ data, selected, id }) => {
           id="top"
           style={{
             background: 'var(--color-primary)',
-            width: '10px',
-            height: '10px',
-            left: '-5px',
-            top: '-5px'
+            width: '12px',
+            height: '12px',
+            left: '50%',
+            top: '-7px',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -52,11 +54,12 @@ const MergeNode = ({ data, selected, id }) => {
           id="left"
           style={{
             background: 'var(--color-primary)',
-            width: '10px',
-            height: '10px',
-            left: '-5px',
+            width: '12px',
+            height: '12px',
+            left: '-7px',
             top: '50%',
-            transform: 'translateY(-50%)'
+            transform: 'translateY(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -65,11 +68,12 @@ const MergeNode = ({ data, selected, id }) => {
           id="right"
           style={{
             background: 'var(--color-primary)',
-            width: '10px',
-            height: '10px',
-            right: '-5px',
+            width: '12px',
+            height: '12px',
+            right: '-7px',
             top: '50%',
-            transform: 'translateY(-50%)'
+            transform: 'translateY(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -78,10 +82,12 @@ const MergeNode = ({ data, selected, id }) => {
           id="bottom"
           style={{
             background: 'var(--color-primary)',
-            width: '10px',
-            height: '10px',
-            left: '-5px',
-            bottom: '-5px'
+            width: '12px',
+            height: '12px',
+            left: '50%',
+            bottom: '-7px',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
           }}
         />
       </div>

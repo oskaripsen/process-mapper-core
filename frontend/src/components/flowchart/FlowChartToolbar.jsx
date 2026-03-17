@@ -128,8 +128,10 @@ const FlowChartToolbar = ({
       <button
         className="toolbar-icon"
         onClick={handleAutoLayout}
-        disabled={isGenerating || nodes.length === 0}
-        title="Auto Layout - Recalculate all node positions for natural flow"
+        disabled={isGenerating}
+        title={nodes.length === 0
+          ? "Auto Layout - Add steps first (or click to see why layout can't run yet)"
+          : "Auto Layout - Recalculate all node positions for natural flow"}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <rect x="3" y="3" width="7" height="7" rx="1"/>

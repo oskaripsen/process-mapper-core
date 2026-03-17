@@ -112,9 +112,12 @@ const DecisionNode = ({ data, selected, id }) => {
           id="left"
           style={{
             background: 'var(--color-primary)',
-            width: '8px',
-            height: '8px',
-            left: '-4px',
+            width: '10px',
+            height: '10px',
+            left: '-6px',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -123,9 +126,12 @@ const DecisionNode = ({ data, selected, id }) => {
           id="top"
           style={{
             background: 'var(--color-primary)',
-            width: '8px',
-            height: '8px',
-            top: '-4px',
+            width: '10px',
+            height: '10px',
+            top: '-6px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -134,9 +140,12 @@ const DecisionNode = ({ data, selected, id }) => {
           id="right"
           style={{
             background: 'var(--color-primary)',
-            width: '8px',
-            height: '8px',
-            right: '-4px',
+            width: '10px',
+            height: '10px',
+            right: '-6px',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            zIndex: 10,
           }}
         />
         <Handle
@@ -145,9 +154,12 @@ const DecisionNode = ({ data, selected, id }) => {
           id="bottom"
           style={{
             background: 'var(--color-primary)',
-            width: '8px',
-            height: '8px',
-            bottom: '-4px',
+            width: '10px',
+            height: '10px',
+            bottom: '-6px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 10,
           }}
         />
       </div>
